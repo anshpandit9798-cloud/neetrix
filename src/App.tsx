@@ -38,7 +38,14 @@ import {
   ErrorNotebook,
   MonthlySection
 } from "./components/DashboardCards";
-import { getSupabase, getSupabaseKeys, initSupabase } from "./lib/supabase";
+import { 
+  getAppwriteKeys, 
+  initAppwrite, 
+  getAppwriteClient, 
+  getAppwriteAccount, 
+  getAppwriteDatabases 
+} from "./lib/appwrite";
+import { ID, Query } from "appwrite";
 
 function getTodayKey() {
   const d = new Date();
@@ -206,12 +213,14 @@ export default function App() {
     return 14; // Default baseline streak for experienced users
   });
 
-  // Supabase connection state
+  // Appwrite connection state
   const [user, setUser] = useState<any>(null);
-  const [supabaseUrlInput, setSupabaseUrlInput] = useState("");
-  const [supabaseAnonKeyInput, setSupabaseAnonKeyInput] = useState("");
-  const [isSupabaseConfigured, setIsSupabaseConfigured] = useState(false);
-  const [supabaseStreak, setSupabaseStreak] = useState<number>(14);
+  const [appwriteEndpointInput, setAppwriteEndpointInput] = useState("");
+  const [appwriteProjectIdInput, setAppwriteProjectIdInput] = useState("");
+  const [appwriteDatabaseIdInput, setAppwriteDatabaseIdInput] = useState("");
+  const [appwriteCollectionIdInput, setAppwriteCollectionIdInput] = useState("");
+  const [isAppwriteConfigured, setIsAppwriteConfigured] = useState(false);
+  const [appwriteStreak, setAppwriteStreak] = useState<number>(14);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
@@ -219,58 +228,48 @@ export default function App() {
 
   // Load manually configured credentials on mount
   useEffect(() => {
-    const { url, anonKey } = getSupabaseKeys();
-    setSupabaseUrlInput(url);
-    setSupabaseAnonKeyInput(anonKey);
-    setIsSupabaseConfigured(!!url && !!anonKey);
+    const { endpoint, projectId, databaseId, collectionId } = getAppwriteKeys();
+    setAppwriteEndpointInput(endpoint);
+    setAppwriteProjectIdInput(projectId);
+    setAppwriteDatabaseIdInput(databaseId);
+    setAppwriteCollectionIdInput(collectionId);
+    setIsAppwriteConfigured(!!projectId && !!databaseId && !!collectionId);
   }, []);
 
-  // Sync / Auto Session from Supabase
+  // Sync / Auto Session from Appwrite
   useEffect(() => {
-    const sb = getSupabase();
-    if (sb) {
-      sb.auth.getUser().then(({ data: { user: currentUser } }) => {
-        if (currentUser) {
-          setUser(currentUser);
-          fetchAndUpdateSupabaseStreak(currentUser);
-          syncDataFromSupabase(selectedDate, currentUser);
-        } else {
-          setUser(null);
-        }
-      }).catch(err => {
-        console.error("Failed to fetch user session:", err);
+    const account = getAppwriteAccount();
+    if (account) {
+      account.get().then((currentUser) => {
+        setUser(currentUser);
+        fetchAndUpdateAppwriteStreak(currentUser);
+        syncDataFromAppwrite(selectedDate, currentUser);
+      }).catch((err) => {
+        console.log("No active Appwrite session found:", err);
+        setUser(null);
       });
-
-      const { data: { subscription } } = sb.auth.onAuthStateChange((event, session) => {
-        if (session?.user) {
-          setUser(session.user);
-          fetchAndUpdateSupabaseStreak(session.user);
-          syncDataFromSupabase(selectedDate, session.user);
-        } else {
-          setUser(null);
-        }
-      });
-
-      return () => {
-        subscription.unsubscribe();
-      };
     } else {
       setUser(null);
     }
-  }, [selectedDate, isSupabaseConfigured]);
+  }, [selectedDate, isAppwriteConfigured]);
 
-  const fetchAndUpdateSupabaseStreak = async (currentUser = user) => {
-    const sb = getSupabase();
-    if (!sb || !currentUser) return;
+  const fetchAndUpdateAppwriteStreak = async (currentUser = user) => {
+    const db = getAppwriteDatabases();
+    const { databaseId, collectionId } = getAppwriteKeys();
+    if (!db || !currentUser || !databaseId || !collectionId) return;
     
     try {
-      const { data: logs, error } = await sb
-        .from("daily_logs")
-        .select("date")
-        .eq("user_id", currentUser.id)
-        .order("date", { ascending: false });
-        
-      if (error) throw error;
+      const res = await db.listDocuments(
+        databaseId,
+        collectionId,
+        [
+          Query.equal("user_id", currentUser.$id),
+          Query.orderDesc("date"),
+          Query.limit(100)
+        ]
+      );
+      
+      const logs = res.documents;
       
       if (logs && logs.length > 0) {
         let calcStreak = 0;
@@ -295,29 +294,38 @@ export default function App() {
         
         setStreak(calcStreak);
         localStorage.setItem("streak", calcStreak.toString());
-        setSupabaseStreak(calcStreak);
+        setAppwriteStreak(calcStreak);
       }
     } catch (err) {
-      console.error("Failed to update streak from Supabase:", err);
+      console.error("Failed to update streak from Appwrite:", err);
     }
   };
 
-  const syncDataFromSupabase = async (dateStr: string, currentUser = user) => {
-    const sb = getSupabase();
-    if (!sb || !currentUser) return;
+  const syncDataFromAppwrite = async (dateStr: string, currentUser = user) => {
+    const db = getAppwriteDatabases();
+    const { databaseId, collectionId } = getAppwriteKeys();
+    if (!db || !currentUser || !databaseId || !collectionId) return;
     
     try {
-      const { data: dbData, error } = await sb
-        .from("daily_logs")
-        .select("*")
-        .eq("user_id", currentUser.id)
-        .eq("date", dateStr)
-        .maybeSingle();
-        
-      if (dbData) {
+      const res = await db.listDocuments(
+        databaseId,
+        collectionId,
+        [
+          Query.equal("user_id", currentUser.$id),
+          Query.equal("date", dateStr),
+          Query.limit(1)
+        ]
+      );
+      
+      if (res.documents.length > 0) {
+        const dbData = res.documents[0];
         let parsedPayload: Partial<NeetData> = {};
         if (dbData.payload) {
-          parsedPayload = typeof dbData.payload === "string" ? JSON.parse(dbData.payload) : dbData.payload;
+          try {
+            parsedPayload = typeof dbData.payload === "string" ? JSON.parse(dbData.payload) : dbData.payload;
+          } catch (e) {
+            console.error("Failed to parse document payload:", e);
+          }
         }
         
         const mergedData: NeetData = {
@@ -365,17 +373,17 @@ export default function App() {
         return mergedData;
       }
     } catch (err) {
-      console.error("Failed to sync date from Supabase:", err);
+      console.error("Failed to sync date from Appwrite:", err);
     }
   };
 
-  const handleSupabaseLogin = async (e?: React.FormEvent | string, pass?: string) => {
+  const handleAppwriteLogin = async (e?: React.FormEvent | string, pass?: string) => {
     if (e && typeof e !== "string" && "preventDefault" in e) {
       e.preventDefault();
     }
-    const sb = getSupabase();
-    if (!sb) {
-      showToast("Please configure your Supabase URL and Anon Key first!", "error");
+    const account = getAppwriteAccount();
+    if (!account) {
+      showToast("Please configure your Appwrite Project ID first!", "error");
       return;
     }
     
@@ -388,13 +396,19 @@ export default function App() {
     }
     setAuthLoading(true);
     try {
-      const { data: authData, error } = await sb.auth.signInWithPassword({
-        email: emailVal,
-        password: passVal,
-      });
-      if (error) throw error;
+      if (typeof account.createEmailPasswordSession === "function") {
+        await account.createEmailPasswordSession(emailVal, passVal);
+      } else {
+        await (account as any).createEmailSession(emailVal, passVal);
+      }
+      
+      const currentUser = await account.get();
+      setUser(currentUser);
       showToast("Login successful 🔥", "success");
       setAuthPassword("");
+      
+      await fetchAndUpdateAppwriteStreak(currentUser);
+      await syncDataFromAppwrite(selectedDate, currentUser);
     } catch (err: any) {
       showToast(`Login failed: ${err.message}`, "error");
     } finally {
@@ -402,13 +416,13 @@ export default function App() {
     }
   };
 
-  const handleSupabaseSignup = async (e?: React.FormEvent | string, pass?: string) => {
+  const handleAppwriteSignup = async (e?: React.FormEvent | string, pass?: string) => {
     if (e && typeof e !== "string" && "preventDefault" in e) {
       e.preventDefault();
     }
-    const sb = getSupabase();
-    if (!sb) {
-      showToast("Please configure your Supabase URL and Anon Key first!", "error");
+    const account = getAppwriteAccount();
+    if (!account) {
+      showToast("Please configure your Appwrite Project ID first!", "error");
       return;
     }
 
@@ -421,12 +435,12 @@ export default function App() {
     }
     setAuthLoading(true);
     try {
-      const { data: authData, error } = await sb.auth.signUp({
-        email: emailVal,
-        password: passVal,
-      });
-      if (error) throw error;
-      showToast("Signup successful ✅ (check email)", "success");
+      await account.create(
+        ID.unique(),
+        emailVal,
+        passVal
+      );
+      showToast("Signup successful 🔥", "success");
       setAuthPassword("");
     } catch (err: any) {
       showToast(`Signup failed: ${err.message}`, "error");
@@ -435,33 +449,44 @@ export default function App() {
     }
   };
 
-  const handleSupabaseLogout = async () => {
-    const sb = getSupabase();
-    if (sb) {
-      await sb.auth.signOut();
-      setUser(null);
-      showToast("Logged out successfully", "success");
+  const handleAppwriteLogout = async () => {
+    const account = getAppwriteAccount();
+    if (account) {
+      try {
+        await account.deleteSession("current");
+        setUser(null);
+        showToast("Logged out successfully", "success");
+      } catch (err: any) {
+        showToast(`Logout failed: ${err.message}`, "error");
+      }
     }
   };
 
   // Expose methods to window for global access/testing scripts
   useEffect(() => {
-    (window as any).signup = handleSupabaseSignup;
-    (window as any).login = handleSupabaseLogin;
+    (window as any).signup = handleAppwriteSignup;
+    (window as any).login = handleAppwriteLogin;
     (window as any).getUser = async () => {
-      const sb = getSupabase();
-      if (!sb) return null;
-      const { data } = await sb.auth.getUser();
-      return data?.user || null;
+      const account = getAppwriteAccount();
+      if (!account) return null;
+      try {
+        return await account.get();
+      } catch {
+        return null;
+      }
     };
     (window as any).getTodayKey = getTodayKey;
     (window as any).saveData = saveData;
     (window as any).loadData = async () => {
-      const sb = getSupabase();
-      if (!sb) return;
-      const { data: { user: currentUser } } = await sb.auth.getUser();
-      if (currentUser) {
-        await syncDataFromSupabase(selectedDate, currentUser);
+      const account = getAppwriteAccount();
+      if (!account) return;
+      try {
+        const currentUser = await account.get();
+        if (currentUser) {
+          await syncDataFromAppwrite(selectedDate, currentUser);
+        }
+      } catch (err) {
+        console.log("Not logged in");
       }
     };
     (window as any).lockUI = lockUI;
@@ -469,41 +494,54 @@ export default function App() {
 
   const handleSaveCredentials = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!supabaseUrlInput || !supabaseAnonKeyInput) {
-      showToast("Please enter both Supabase URL and Anon Key!", "error");
+    if (!appwriteProjectIdInput || !appwriteDatabaseIdInput || !appwriteCollectionIdInput) {
+      showToast("Please enter Project ID, Database ID, and Collection ID!", "error");
       return;
     }
-    const client = initSupabase(supabaseUrlInput.trim(), supabaseAnonKeyInput.trim());
+    const client = initAppwrite(
+      appwriteEndpointInput.trim(),
+      appwriteProjectIdInput.trim(),
+      appwriteDatabaseIdInput.trim(),
+      appwriteCollectionIdInput.trim()
+    );
     if (client) {
-      setIsSupabaseConfigured(true);
-      showToast("Supabase configuration saved! Connected successfully ⚡", "success");
+      setIsAppwriteConfigured(true);
+      showToast("Appwrite configuration saved! Connected successfully ⚡", "success");
       
-      client.auth.getUser().then(({ data: { user: currentUser } }) => {
-        if (currentUser) {
+      const account = getAppwriteAccount();
+      if (account) {
+        account.get().then((currentUser) => {
           setUser(currentUser);
-          fetchAndUpdateSupabaseStreak(currentUser);
-          syncDataFromSupabase(selectedDate, currentUser);
-        }
-      });
+          fetchAndUpdateAppwriteStreak(currentUser);
+          syncDataFromAppwrite(selectedDate, currentUser);
+        }).catch(() => {
+          setUser(null);
+        });
+      }
     } else {
-      showToast("Failed to initialize Supabase client. Check your keys!", "error");
+      showToast("Failed to initialize Appwrite client. Check your credentials!", "error");
     }
   };
 
   const handleClearCredentials = () => {
-    if (confirm("Are you sure you want to remove Supabase keys? This will log you out.")) {
-      localStorage.removeItem("SUPABASE_URL");
-      localStorage.removeItem("SUPABASE_ANON_KEY");
-      setSupabaseUrlInput("");
-      setSupabaseAnonKeyInput("");
-      setIsSupabaseConfigured(false);
+    if (confirm("Are you sure you want to remove Appwrite credentials? This will log you out.")) {
+      localStorage.removeItem("APPWRITE_ENDPOINT");
+      localStorage.removeItem("APPWRITE_PROJECT_ID");
+      localStorage.removeItem("APPWRITE_DATABASE_ID");
+      localStorage.removeItem("APPWRITE_COLLECTION_ID");
+      setAppwriteEndpointInput("https://cloud.appwrite.io/v1");
+      setAppwriteProjectIdInput("");
+      setAppwriteDatabaseIdInput("");
+      setAppwriteCollectionIdInput("");
+      setIsAppwriteConfigured(false);
       setUser(null);
     }
   };
 
   const forceFullCloudSync = async () => {
-    const sb = getSupabase();
-    if (!sb || !user) return;
+    const db = getAppwriteDatabases();
+    const { databaseId, collectionId } = getAppwriteKeys();
+    if (!db || !user || !databaseId || !collectionId) return;
     
     setSyncStatus("syncing");
     showToast("Performing full cloud backup... 🔄", "info");
@@ -517,26 +555,52 @@ export default function App() {
         const raw = localStorage.getItem(key);
         if (raw) {
           const payload = JSON.parse(raw);
-          const { error } = await sb
-            .from("daily_logs")
-            .upsert({
-              user_id: user.id,
-              date: dateStr,
-              bio_mcq: (payload.bioMCQ ?? 0).toString(),
-              phy_mcq: (payload.phyMCQ ?? 0).toString(),
-              chem_mcq: (payload.chemMCQ ?? 0).toString(),
-              errors: payload.errors ?? "",
-              hours: payload.totalHours ?? "0.0",
-              locked: payload.locked ?? false,
-              payload: payload
-            });
-          if (!error) successCount++;
+          
+          const res = await db.listDocuments(
+            databaseId,
+            collectionId,
+            [
+              Query.equal("user_id", user.$id),
+              Query.equal("date", dateStr),
+              Query.limit(1)
+            ]
+          );
+
+          const docPayload = {
+            user_id: user.$id,
+            date: dateStr,
+            bio_mcq: (payload.bioMCQ ?? 0).toString(),
+            phy_mcq: (payload.phyMCQ ?? 0).toString(),
+            chem_mcq: (payload.chemMCQ ?? 0).toString(),
+            errors: payload.errors ?? "",
+            hours: payload.totalHours ?? "0.0",
+            locked: payload.locked ?? false,
+            payload: JSON.stringify(payload)
+          };
+
+          if (res.documents.length > 0) {
+            await db.updateDocument(
+              databaseId,
+              collectionId,
+              res.documents[0].$id,
+              docPayload
+            );
+          } else {
+            await db.createDocument(
+              databaseId,
+              collectionId,
+              ID.unique(),
+              docPayload
+            );
+          }
+          
+          successCount++;
         }
       }
       
-      await fetchAndUpdateSupabaseStreak(user);
+      await fetchAndUpdateAppwriteStreak(user);
       setSyncStatus("success");
-      showToast(`Synced ${successCount} entries to Supabase Cloud! ✅`, "success");
+      showToast(`Synced ${successCount} entries to Appwrite Cloud! ✅`, "success");
     } catch (err: any) {
       console.error(err);
       setSyncStatus("error");
@@ -841,31 +905,55 @@ export default function App() {
       lockUI();
     }, 50);
 
-    // Sync to Supabase if logged in
-    const sb = getSupabase();
-    if (sb && user) {
+    // Sync to Appwrite if logged in
+    const db = getAppwriteDatabases();
+    const { databaseId, collectionId } = getAppwriteKeys();
+    if (db && user && databaseId && collectionId) {
       try {
-        showToast("Syncing with Supabase Cloud... 🔄", "info");
-        const { error } = await sb
-          .from("daily_logs")
-          .upsert({
-            user_id: user.id,
-            date: selectedDate,
-            bio_mcq: payload.bioMCQ.toString(),
-            phy_mcq: payload.phyMCQ.toString(),
-            chem_mcq: payload.chemMCQ.toString(),
-            errors: payload.errors,
-            hours: payload.hours,
-            locked: true,
-            payload: payload
-          });
-
-        if (error) throw error;
+        showToast("Syncing with Appwrite Cloud... 🔄", "info");
         
-        await fetchAndUpdateSupabaseStreak(user);
-        showToast("Saved & Synced with Supabase Cloud 🔒", "success");
+        const res = await db.listDocuments(
+          databaseId,
+          collectionId,
+          [
+            Query.equal("user_id", user.$id),
+            Query.equal("date", selectedDate),
+            Query.limit(1)
+          ]
+        );
+        
+        const docPayload = {
+          user_id: user.$id,
+          date: selectedDate,
+          bio_mcq: payload.bioMCQ.toString(),
+          phy_mcq: payload.phyMCQ.toString(),
+          chem_mcq: payload.chemMCQ.toString(),
+          errors: payload.errors,
+          hours: payload.hours,
+          locked: true,
+          payload: JSON.stringify(payload)
+        };
+
+        if (res.documents.length > 0) {
+          await db.updateDocument(
+            databaseId,
+            collectionId,
+            res.documents[0].$id,
+            docPayload
+          );
+        } else {
+          await db.createDocument(
+            databaseId,
+            collectionId,
+            ID.unique(),
+            docPayload
+          );
+        }
+        
+        await fetchAndUpdateAppwriteStreak(user);
+        showToast("Saved & Synced with Appwrite Cloud 🔒", "success");
       } catch (err: any) {
-        console.error("Supabase Sync Error:", err);
+        console.error("Appwrite Sync Error:", err);
         showToast(`Saved locally, but Cloud Sync failed: ${err.message}`, "error");
       }
     } else {
@@ -1262,30 +1350,30 @@ ${data.weakTopics ? data.weakTopics.trim() : "None listed."}
                 transition={{ duration: 0.2 }}
                 className="flex-1 max-w-6xl mx-auto w-full grid grid-cols-1 lg:grid-cols-12 gap-6 no-print"
               >
-                {/* LEFT COLUMN: SUPABASE CONFIG & AUTH (5 Cols) */}
+                {/* LEFT COLUMN: APPWRITE CONFIG & AUTH (5 Cols) */}
                 <div className="lg:col-span-5 bg-slate-900/40 border border-white/5 rounded-3xl p-6 flex flex-col gap-6 h-fit">
                   <div className="flex items-center justify-between border-b border-white/10 pb-4">
                     <div>
                       <h2 className="text-lg font-bold text-cyan-400 flex items-center gap-2">
                         <Cloud className="h-5 w-5 text-cyan-400 shrink-0" />
-                        🔐 Cloud Sync (Supabase)
+                        🔐 Cloud Sync (Appwrite)
                       </h2>
                       <p className="text-[11px] text-slate-400 mt-1">Connect your database to enable automated multi-device backup & sync</p>
                     </div>
                   </div>
 
-                  {/* SUPABASE CONNECTION STATUS */}
+                  {/* APPWRITE CONNECTION STATUS */}
                   <div className="bg-slate-950/60 p-4 rounded-2xl border border-white/5 flex items-center justify-between gap-4">
                     <div className="text-left">
                       <p className="text-xs font-bold text-white uppercase tracking-wider">Cloud Connection Status</p>
                       <p className="text-[11px] text-slate-400 mt-0.5">
-                        {isSupabaseConfigured 
+                        {isAppwriteConfigured 
                           ? (user ? `Connected as ${user.email}` : "Client Initialized (Not Logged In)") 
-                          : "No Supabase configuration detected"}
+                          : "No Appwrite configuration detected"}
                       </p>
                     </div>
                     <div>
-                      {isSupabaseConfigured ? (
+                      {isAppwriteConfigured ? (
                         user ? (
                           <span className="flex h-3 w-3 relative">
                             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
@@ -1304,15 +1392,15 @@ ${data.weakTopics ? data.weakTopics.trim() : "None listed."}
                     </div>
                   </div>
 
-                  {/* SUPABASE CREDENTIALS CONFIGURATION */}
-                  {!getSupabaseKeys().isEnv && (
+                  {/* APPWRITE CREDENTIALS CONFIGURATION */}
+                  {!getAppwriteKeys().isEnv && (
                     <div className="bg-slate-950/40 p-4 rounded-2xl border border-white/5 flex flex-col gap-3">
                       <div className="flex items-center justify-between">
                         <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
                           <Key className="h-3.5 w-3.5 text-cyan-400" />
-                          Supabase Keys Config
+                          Appwrite Config Keys
                         </h4>
-                        {isSupabaseConfigured && (
+                        {isAppwriteConfigured && (
                           <button 
                             type="button" 
                             onClick={handleClearCredentials}
@@ -1322,46 +1410,73 @@ ${data.weakTopics ? data.weakTopics.trim() : "None listed."}
                           </button>
                         )}
                       </div>
-                      <p className="text-[11px] text-slate-500">Enter your project credentials below. Keys are stored locally in your browser cache.</p>
+                      <p className="text-[11px] text-slate-500">Enter your Appwrite credentials. Keys are stored locally in your browser cache.</p>
                       <form onSubmit={handleSaveCredentials} className="flex flex-col gap-2 mt-1">
-                        <input
-                          type="text"
-                          placeholder="Supabase Project URL"
-                          value={supabaseUrlInput}
-                          onChange={(e) => setSupabaseUrlInput(e.target.value)}
-                          className="allow bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400 w-full"
-                          required
-                        />
-                        <input
-                          type="password"
-                          placeholder="Supabase Anon Key"
-                          value={supabaseAnonKeyInput}
-                          onChange={(e) => setSupabaseAnonKeyInput(e.target.value)}
-                          className="allow bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400 w-full"
-                          required
-                        />
+                        <div className="flex flex-col gap-1 text-left">
+                          <label className="text-[9px] text-slate-400 uppercase font-bold tracking-wider">API Endpoint</label>
+                          <input
+                            type="text"
+                            placeholder="https://cloud.appwrite.io/v1"
+                            value={appwriteEndpointInput}
+                            onChange={(e) => setAppwriteEndpointInput(e.target.value)}
+                            className="allow bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400 w-full"
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1 text-left">
+                          <label className="text-[9px] text-slate-400 uppercase font-bold tracking-wider">Project ID</label>
+                          <input
+                            type="text"
+                            placeholder="Project ID"
+                            value={appwriteProjectIdInput}
+                            onChange={(e) => setAppwriteProjectIdInput(e.target.value)}
+                            className="allow bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400 w-full"
+                            required
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1 text-left">
+                          <label className="text-[9px] text-slate-400 uppercase font-bold tracking-wider">Database ID</label>
+                          <input
+                            type="text"
+                            placeholder="Database ID"
+                            value={appwriteDatabaseIdInput}
+                            onChange={(e) => setAppwriteDatabaseIdInput(e.target.value)}
+                            className="allow bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400 w-full"
+                            required
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1 text-left">
+                          <label className="text-[9px] text-slate-400 uppercase font-bold tracking-wider">Collection ID</label>
+                          <input
+                            type="text"
+                            placeholder="Collection ID"
+                            value={appwriteCollectionIdInput}
+                            onChange={(e) => setAppwriteCollectionIdInput(e.target.value)}
+                            className="allow bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400 w-full"
+                            required
+                          />
+                        </div>
                         <button
                           type="submit"
-                          className="allow bg-slate-800 hover:bg-slate-700 text-cyan-400 font-bold text-xs uppercase tracking-wider py-2 rounded-xl transition-all border border-white/10 cursor-pointer"
+                          className="allow bg-slate-800 hover:bg-slate-700 text-cyan-400 font-bold text-xs uppercase tracking-wider py-2 rounded-xl transition-all border border-white/10 cursor-pointer mt-2"
                         >
-                          {isSupabaseConfigured ? "Update Credentials" : "Save Credentials"}
+                          {isAppwriteConfigured ? "Update Credentials" : "Save Credentials"}
                         </button>
                       </form>
                     </div>
                   )}
 
-                  {getSupabaseKeys().isEnv && (
+                  {getAppwriteKeys().isEnv && (
                     <div className="bg-slate-950/40 p-4 rounded-2xl border border-white/5 flex items-center gap-3">
                       <Database className="h-5 w-5 text-green-400 shrink-0" />
                       <div className="text-left">
                         <p className="text-xs font-bold text-white uppercase tracking-wider">Default Server Keys Active</p>
-                        <p className="text-[11px] text-slate-500">Loaded keys from environment variables. Custom inputs are disabled.</p>
+                        <p className="text-[11px] text-slate-500">Loaded Appwrite keys from environment variables. Custom inputs are disabled.</p>
                       </div>
                     </div>
                   )}
 
                   {/* AUTH LOG IN / SIGN UP OR SESSION INFO */}
-                  {isSupabaseConfigured ? (
+                  {isAppwriteConfigured ? (
                     !user ? (
                       <div className="bg-slate-950/40 p-5 rounded-2xl border border-white/5 flex flex-col gap-4">
                         <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5 border-b border-white/5 pb-2">
@@ -1405,7 +1520,7 @@ ${data.weakTopics ? data.weakTopics.trim() : "None listed."}
                           <div className="grid grid-cols-2 gap-2 mt-2">
                             <button
                               type="button"
-                              onClick={handleSupabaseLogin}
+                              onClick={handleAppwriteLogin}
                               disabled={authLoading}
                               className="allow bg-cyan-500 hover:bg-cyan-400 text-black font-bold text-xs uppercase tracking-wider py-2.5 rounded-xl transition-all cursor-pointer border-none flex items-center justify-center gap-1.5 disabled:opacity-50"
                             >
@@ -1413,7 +1528,7 @@ ${data.weakTopics ? data.weakTopics.trim() : "None listed."}
                             </button>
                             <button
                               type="button"
-                              onClick={handleSupabaseSignup}
+                              onClick={handleAppwriteSignup}
                               disabled={authLoading}
                               className="allow bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs uppercase tracking-wider py-2.5 rounded-xl transition-all border border-white/10 cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
                             >
@@ -1436,13 +1551,13 @@ ${data.weakTopics ? data.weakTopics.trim() : "None listed."}
                           </div>
                           <div className="flex justify-between items-center">
                             <span className="text-slate-500">User ID:</span>
-                            <span className="font-mono text-[10px] text-slate-400 truncate max-w-[180px]">{user.id}</span>
+                            <span className="font-mono text-[10px] text-slate-400 truncate max-w-[180px]">{user.$id}</span>
                           </div>
                           <div className="flex justify-between items-center border-t border-white/5 pt-2">
                             <span className="text-slate-500">Cloud Streak:</span>
                             <span className="text-orange-400 font-bold flex items-center gap-1">
                               <Flame className="h-3.5 w-3.5 shrink-0 animate-pulse" />
-                              {supabaseStreak} days
+                              {appwriteStreak} days
                             </span>
                           </div>
                         </div>
@@ -1469,7 +1584,7 @@ ${data.weakTopics ? data.weakTopics.trim() : "None listed."}
                           
                           <button
                             type="button"
-                            onClick={handleSupabaseLogout}
+                            onClick={handleAppwriteLogout}
                             className="allow bg-red-950/20 text-red-400 hover:bg-red-900/20 border border-red-500/10 font-bold text-xs uppercase tracking-wider py-2 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5"
                           >
                             <LogOut className="h-3.5 w-3.5" />
@@ -1483,38 +1598,31 @@ ${data.weakTopics ? data.weakTopics.trim() : "None listed."}
                       <CloudOff className="h-10 w-10 text-red-500/55" />
                       <div>
                         <p className="text-xs font-bold text-slate-300">Sync Config Required</p>
-                        <p className="text-[11px] text-slate-500 mt-1 leading-normal">Configure Supabase connection keys above or in environment variables to enable auth, remote backup, & cloud database capabilities.</p>
+                        <p className="text-[11px] text-slate-500 mt-1 leading-normal">Configure Appwrite credentials above to enable authentication, daily cloud tracking, and remote backup database features.</p>
                       </div>
                     </div>
                   )}
 
-                  {/* SUPABASE TABLE SCHEMA HINT */}
+                  {/* APPWRITE COLLECTION ATTRIBUTES GUIDE */}
                   <div className="bg-slate-950/20 p-4 rounded-2xl border border-white/5 flex flex-col gap-2 text-left">
                     <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
                       <Database className="h-3.5 w-3.5 text-cyan-400" />
-                      Supabase Setup Guide
+                      Appwrite Console Setup
                     </p>
                     <p className="text-[11px] text-slate-500 leading-normal">
-                      Run this script in your Supabase <strong>SQL Editor</strong> to configure the database schema:
+                      Create a database and a collection named <strong>daily_logs</strong>. Add these exact attributes to your collection:
                     </p>
-                    <pre className="bg-slate-900/80 p-3 rounded-xl text-[9px] font-mono text-slate-400 overflow-x-auto border border-white/5 whitespace-pre selection:bg-cyan-500/10 max-h-[140px] leading-relaxed">
-{`create extension if not exists "uuid-ossp";
-
-create table if not exists daily_logs (
-  id uuid primary key default uuid_generate_v4(),
-  user_id uuid,
-  date text,
-  bio_mcq text,
-  phy_mcq text,
-  chem_mcq text,
-  errors text,
-  hours text,
-  locked boolean default false,
-  created_at timestamp default now(),
-
-  unique(user_id, date)
-);`}
-                    </pre>
+                    <div className="bg-slate-900/85 p-3 rounded-xl text-[10px] font-mono text-slate-300 border border-white/5 max-h-[220px] overflow-y-auto space-y-1">
+                      <div>• <span className="text-cyan-400">user_id</span>: string</div>
+                      <div>• <span className="text-cyan-400">date</span>: string</div>
+                      <div>• <span className="text-cyan-400">bio_mcq</span>: string</div>
+                      <div>• <span className="text-cyan-400">phy_mcq</span>: string</div>
+                      <div>• <span className="text-cyan-400">chem_mcq</span>: string</div>
+                      <div>• <span className="text-cyan-400">errors</span>: string (large text)</div>
+                      <div>• <span className="text-cyan-400">hours</span>: string</div>
+                      <div>• <span className="text-cyan-400">locked</span>: boolean</div>
+                      <div>• <span className="text-cyan-400">payload</span>: string (large text)</div>
+                    </div>
                   </div>
                 </div>
 
