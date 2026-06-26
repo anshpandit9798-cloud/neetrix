@@ -12,7 +12,19 @@ import {
   ArrowRight,
   Search,
   FileText,
-  LayoutDashboard
+  LayoutDashboard,
+  Cloud,
+  CloudOff,
+  Key,
+  Database,
+  Lock,
+  Unlock,
+  RefreshCw,
+  LogOut,
+  Mail,
+  UserCheck,
+  Check,
+  AlertTriangle
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { NeetData } from "./types";
@@ -26,6 +38,7 @@ import {
   ErrorNotebook,
   MonthlySection
 } from "./components/DashboardCards";
+import { getSupabase, getSupabaseKeys, initSupabase } from "./lib/supabase";
 
 function getTodayKey() {
   const d = new Date();
@@ -178,6 +191,312 @@ export default function App() {
     if (saved) return parseInt(saved) || 0;
     return 14; // Default baseline streak for experienced users
   });
+
+  // Supabase connection state
+  const [user, setUser] = useState<any>(null);
+  const [supabaseUrlInput, setSupabaseUrlInput] = useState("");
+  const [supabaseAnonKeyInput, setSupabaseAnonKeyInput] = useState("");
+  const [isSupabaseConfigured, setIsSupabaseConfigured] = useState(false);
+  const [supabaseStreak, setSupabaseStreak] = useState<number>(14);
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<"idle" | "syncing" | "success" | "error">("idle");
+
+  // Load manually configured credentials on mount
+  useEffect(() => {
+    const { url, anonKey } = getSupabaseKeys();
+    setSupabaseUrlInput(url);
+    setSupabaseAnonKeyInput(anonKey);
+    setIsSupabaseConfigured(!!url && !!anonKey);
+  }, []);
+
+  // Sync / Auto Session from Supabase
+  useEffect(() => {
+    const sb = getSupabase();
+    if (sb) {
+      sb.auth.getUser().then(({ data: { user: currentUser } }) => {
+        if (currentUser) {
+          setUser(currentUser);
+          fetchAndUpdateSupabaseStreak(currentUser);
+          syncDataFromSupabase(selectedDate, currentUser);
+        }
+      });
+
+      const { data: { subscription } } = sb.auth.onAuthStateChange((event, session) => {
+        if (session?.user) {
+          setUser(session.user);
+          fetchAndUpdateSupabaseStreak(session.user);
+          syncDataFromSupabase(selectedDate, session.user);
+        } else {
+          setUser(null);
+        }
+      });
+
+      return () => {
+        subscription.unsubscribe();
+      };
+    }
+  }, [selectedDate]);
+
+  const fetchAndUpdateSupabaseStreak = async (currentUser = user) => {
+    const sb = getSupabase();
+    if (!sb || !currentUser) return;
+    
+    try {
+      const { data: logs, error } = await sb
+        .from("daily_logs")
+        .select("date")
+        .eq("user_id", currentUser.id)
+        .order("date", { ascending: false });
+        
+      if (error) throw error;
+      
+      if (logs && logs.length > 0) {
+        let calcStreak = 0;
+        let prevDate = new Date();
+        
+        for (let i = 0; i < logs.length; i++) {
+          let d = new Date(logs[i].date);
+          if (i === 0) {
+            prevDate = d;
+            calcStreak++;
+          } else {
+            let diff = (prevDate.getTime() - d.getTime()) / (1000 * 60 * 60 * 24);
+            const diffDays = Math.round(diff);
+            if (diffDays === 1) {
+              calcStreak++;
+              prevDate = d;
+            } else if (diffDays > 1) {
+              break;
+            }
+          }
+        }
+        
+        setStreak(calcStreak);
+        localStorage.setItem("streak", calcStreak.toString());
+        setSupabaseStreak(calcStreak);
+      }
+    } catch (err) {
+      console.error("Failed to update streak from Supabase:", err);
+    }
+  };
+
+  const syncDataFromSupabase = async (dateStr: string, currentUser = user) => {
+    const sb = getSupabase();
+    if (!sb || !currentUser) return;
+    
+    try {
+      const { data: dbData, error } = await sb
+        .from("daily_logs")
+        .select("*")
+        .eq("user_id", currentUser.id)
+        .eq("date", dateStr)
+        .maybeSingle();
+        
+      if (dbData) {
+        let parsedPayload: Partial<NeetData> = {};
+        if (dbData.payload) {
+          parsedPayload = typeof dbData.payload === "string" ? JSON.parse(dbData.payload) : dbData.payload;
+        }
+        
+        const mergedData: NeetData = {
+          studySeconds: parsedPayload.studySeconds ?? Math.round((parseFloat(dbData.hours) || 0) * 3600),
+          totalHours: dbData.hours ?? parsedPayload.totalHours ?? "0.0",
+          wakeUpOnTime: parsedPayload.wakeUpOnTime ?? false,
+          bioNcertReading: parsedPayload.bioNcertReading ?? false,
+          physicsQuestions: parsedPayload.physicsQuestions ?? 0,
+          chemOrganic: parsedPayload.chemOrganic ?? false,
+          chemPhysical: parsedPayload.chemPhysical ?? false,
+          chemInorganic: parsedPayload.chemInorganic ?? false,
+          morningRevisionDone: parsedPayload.morningRevisionDone ?? false,
+          bioMCQ: parseInt(dbData.bio_mcq) || parsedPayload.bioMCQ || 0,
+          phyMCQ: parseInt(dbData.phy_mcq) || parsedPayload.phyMCQ || 0,
+          chemMCQ: parseInt(dbData.chem_mcq) || parsedPayload.chemMCQ || 0,
+          sleepChecked: parsedPayload.sleepChecked ?? false,
+          noSocialMedia: parsedPayload.noSocialMedia ?? false,
+          classAttended: parsedPayload.classAttended ?? false,
+          notesMade: parsedPayload.notesMade ?? false,
+          doubtsMarked: parsedPayload.doubtsMarked ?? false,
+          attentionMaintained: parsedPayload.attentionMaintained ?? false,
+          classRevisionDone: parsedPayload.classRevisionDone ?? false,
+          morningTopicsRevised: parsedPayload.morningTopicsRevised ?? false,
+          errorNotebookUpdated: parsedPayload.errorNotebookUpdated ?? false,
+          lightMcqsDone: parsedPayload.lightMcqsDone ?? false,
+          errors: dbData.errors ?? parsedPayload.errors ?? "",
+          streak: parsedPayload.streak ?? streak ?? 14,
+          lastSavedAt: parsedPayload.lastSavedAt ?? "",
+          locked: dbData.locked ?? parsedPayload.locked ?? false,
+          mockCount: parsedPayload.mockCount ?? 0,
+          analysisDone: parsedPayload.analysisDone ?? false,
+          weakTopics: parsedPayload.weakTopics ?? "",
+        };
+        
+        const key = `NEET_${dateStr}`;
+        localStorage.setItem(key, JSON.stringify(mergedData));
+        
+        setData(mergedData);
+        setIsLocked(mergedData.locked ?? false);
+        
+        if (dateStr === getTodayKey()) {
+          localStorage.setItem("neetData", JSON.stringify(mergedData));
+        }
+        
+        return mergedData;
+      }
+    } catch (err) {
+      console.error("Failed to sync date from Supabase:", err);
+    }
+  };
+
+  const handleSupabaseLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const sb = getSupabase();
+    if (!sb) {
+      alert("Please configure your Supabase URL and Anon Key first!");
+      return;
+    }
+    if (!authEmail || !authPassword) {
+      alert("Please enter both email and password!");
+      return;
+    }
+    setAuthLoading(true);
+    try {
+      const { data: authData, error } = await sb.auth.signInWithPassword({
+        email: authEmail,
+        password: authPassword,
+      });
+      if (error) throw error;
+      setToastMessage("Login successful! Syncing cloud data... ✅");
+      setTimeout(() => setToastMessage(null), 3000);
+      setAuthPassword("");
+    } catch (err: any) {
+      alert(`Login failed: ${err.message}`);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleSupabaseSignup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const sb = getSupabase();
+    if (!sb) {
+      alert("Please configure your Supabase URL and Anon Key first!");
+      return;
+    }
+    if (!authEmail || !authPassword) {
+      alert("Please enter both email and password!");
+      return;
+    }
+    setAuthLoading(true);
+    try {
+      const { data: authData, error } = await sb.auth.signUp({
+        email: authEmail,
+        password: authPassword,
+      });
+      if (error) throw error;
+      setToastMessage("Signup successful! Check email for verification 🔥");
+      setTimeout(() => setToastMessage(null), 3000);
+      setAuthPassword("");
+    } catch (err: any) {
+      alert(`Signup failed: ${err.message}`);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleSupabaseLogout = async () => {
+    const sb = getSupabase();
+    if (sb) {
+      await sb.auth.signOut();
+      setUser(null);
+      setToastMessage("Logged out successfully");
+      setTimeout(() => setToastMessage(null), 3000);
+    }
+  };
+
+  const handleSaveCredentials = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!supabaseUrlInput || !supabaseAnonKeyInput) {
+      alert("Please enter both Supabase URL and Anon Key!");
+      return;
+    }
+    const client = initSupabase(supabaseUrlInput.trim(), supabaseAnonKeyInput.trim());
+    if (client) {
+      setIsSupabaseConfigured(true);
+      setToastMessage("Supabase configuration saved! Connected successfully ⚡");
+      setTimeout(() => setToastMessage(null), 3000);
+      
+      client.auth.getUser().then(({ data: { user: currentUser } }) => {
+        if (currentUser) {
+          setUser(currentUser);
+          fetchAndUpdateSupabaseStreak(currentUser);
+          syncDataFromSupabase(selectedDate, currentUser);
+        }
+      });
+    } else {
+      alert("Failed to initialize Supabase client. Check your keys!");
+    }
+  };
+
+  const handleClearCredentials = () => {
+    if (confirm("Are you sure you want to remove Supabase keys? This will log you out.")) {
+      localStorage.removeItem("SUPABASE_URL");
+      localStorage.removeItem("SUPABASE_ANON_KEY");
+      setSupabaseUrlInput("");
+      setSupabaseAnonKeyInput("");
+      setIsSupabaseConfigured(false);
+      setUser(null);
+    }
+  };
+
+  const forceFullCloudSync = async () => {
+    const sb = getSupabase();
+    if (!sb || !user) return;
+    
+    setSyncStatus("syncing");
+    setToastMessage("Performing full cloud backup... 🔄");
+    
+    try {
+      const localKeys = Object.keys(localStorage).filter(k => k.startsWith("NEET_") && !k.startsWith("NEET_MONTH_"));
+      let successCount = 0;
+      
+      for (const key of localKeys) {
+        const dateStr = key.replace("NEET_", "");
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const payload = JSON.parse(raw);
+          const { error } = await sb
+            .from("daily_logs")
+            .upsert({
+              user_id: user.id,
+              date: dateStr,
+              bio_mcq: (payload.bioMCQ ?? 0).toString(),
+              phy_mcq: (payload.phyMCQ ?? 0).toString(),
+              chem_mcq: (payload.chemMCQ ?? 0).toString(),
+              errors: payload.errors ?? "",
+              hours: payload.totalHours ?? "0.0",
+              locked: payload.locked ?? false,
+              payload: payload
+            });
+          if (!error) successCount++;
+        }
+      }
+      
+      await fetchAndUpdateSupabaseStreak(user);
+      setSyncStatus("success");
+      setToastMessage(`Synced ${successCount} entries to Supabase Cloud! ✅`);
+    } catch (err: any) {
+      console.error(err);
+      setSyncStatus("error");
+      setToastMessage(`Sync failed: ${err.message}`);
+    } finally {
+      setTimeout(() => {
+        setSyncStatus("idle");
+        setToastMessage(null);
+      }, 4000);
+    }
+  };
 
   // STREAK SYSTEM CALCULATION ON LOAD (AUTO RUN)
   useEffect(() => {
@@ -408,7 +727,7 @@ export default function App() {
   };
 
   // Save data using the exact key format NEET_YYYY-MM-DD
-  const saveData = () => {
+  const saveData = async () => {
     const timestamp = new Date().toLocaleString();
     const payload = {
       date: selectedDate,
@@ -476,9 +795,41 @@ export default function App() {
       lockUI();
     }, 50);
 
-    setToastMessage(`Submitted & Locked 🔒`);
+    // Sync to Supabase if logged in
+    const sb = getSupabase();
+    if (sb && user) {
+      try {
+        setToastMessage("Syncing with Supabase Cloud... 🔄");
+        const { error } = await sb
+          .from("daily_logs")
+          .upsert({
+            user_id: user.id,
+            date: selectedDate,
+            bio_mcq: payload.bioMCQ.toString(),
+            phy_mcq: payload.phyMCQ.toString(),
+            chem_mcq: payload.chemMCQ.toString(),
+            errors: payload.errors,
+            hours: payload.hours,
+            locked: true,
+            payload: payload
+          });
+
+        if (error) throw error;
+        
+        await fetchAndUpdateSupabaseStreak(user);
+        setToastMessage("Saved & Synced with Supabase Cloud 🔒");
+        alert("Saved & Synced with Supabase Cloud 🔒");
+      } catch (err: any) {
+        console.error("Supabase Sync Error:", err);
+        setToastMessage(`Saved locally, but Cloud Sync failed: ${err.message}`);
+        alert(`Saved locally, but Cloud Sync failed: ${err.message}`);
+      }
+    } else {
+      setToastMessage(`Submitted & Locked 🔒 (Saved locally)`);
+      alert("Submitted & Locked 🔒 (Saved locally)");
+    }
+
     setTimeout(() => setToastMessage(null), 3000);
-    alert("Submitted & Locked 🔒");
   };
 
   // Generate neat formatted NEET Daily Summary report
@@ -868,95 +1219,351 @@ ${data.weakTopics ? data.weakTopics.trim() : "None listed."}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -15 }}
                 transition={{ duration: 0.2 }}
-                className="flex-1 bg-slate-900/30 border border-white/5 rounded-3xl p-6 flex flex-col gap-6 max-w-4xl mx-auto w-full"
+                className="flex-1 max-w-6xl mx-auto w-full grid grid-cols-1 lg:grid-cols-12 gap-6 no-print"
               >
-                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-white/10 pb-4 gap-4">
-                  <div>
-                    <h2 className="text-xl font-bold text-cyan-400">📅 Historical Study Log</h2>
-                    <p className="text-xs text-slate-400 mt-1">Select and load any historical study record (data is saved to persistent local storage by date-key and is never deleted)</p>
+                {/* LEFT COLUMN: SUPABASE CONFIG & AUTH (5 Cols) */}
+                <div className="lg:col-span-5 bg-slate-900/40 border border-white/5 rounded-3xl p-6 flex flex-col gap-6 h-fit">
+                  <div className="flex items-center justify-between border-b border-white/10 pb-4">
+                    <div>
+                      <h2 className="text-lg font-bold text-cyan-400 flex items-center gap-2">
+                        <Cloud className="h-5 w-5 text-cyan-400 shrink-0" />
+                        🔐 Cloud Sync (Supabase)
+                      </h2>
+                      <p className="text-[11px] text-slate-400 mt-1">Connect your database to enable automated multi-device backup & sync</p>
+                    </div>
                   </div>
-                  <button
-                    onClick={openSettings}
-                    className="allow bg-cyan-500 hover:bg-cyan-400 text-black font-bold text-xs uppercase tracking-wider px-4 py-2.5 rounded-xl transition-all cursor-pointer border-none flex items-center gap-1.5"
-                  >
-                    <Settings className="h-3.5 w-3.5" />
-                    Settings
-                  </button>
-                </div>
 
-                {/* Search / Manual Input Idea */}
-                <div className="bg-slate-950/60 p-4 rounded-2xl border border-white/5 flex flex-col sm:flex-row items-center justify-between gap-4">
-                  <div className="text-left">
-                    <p className="text-xs font-bold text-white uppercase tracking-wider">Fast Date Search</p>
-                    <p className="text-[11px] text-slate-500">Pick any date to automatically load or initialize its study targets</p>
+                  {/* SUPABASE CONNECTION STATUS */}
+                  <div className="bg-slate-950/60 p-4 rounded-2xl border border-white/5 flex items-center justify-between gap-4">
+                    <div className="text-left">
+                      <p className="text-xs font-bold text-white uppercase tracking-wider">Cloud Connection Status</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        {isSupabaseConfigured 
+                          ? (user ? `Connected as ${user.email}` : "Client Initialized (Not Logged In)") 
+                          : "No Supabase configuration detected"}
+                      </p>
+                    </div>
+                    <div>
+                      {isSupabaseConfigured ? (
+                        user ? (
+                          <span className="flex h-3 w-3 relative">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
+                          </span>
+                        ) : (
+                          <span className="flex h-3 w-3 relative">
+                            <span className="relative inline-flex rounded-full h-3 w-3 bg-yellow-500"></span>
+                          </span>
+                        )
+                      ) : (
+                        <span className="flex h-3 w-3 relative">
+                          <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 bg-slate-900 px-3 py-2 rounded-xl border border-white/10 w-full sm:w-auto">
-                    <Calendar className="h-4 w-4 text-cyan-400 shrink-0" />
-                    <input 
-                      type="date"
-                      min="2026-01-01"
-                      max="2027-12-31"
-                      value={selectedDate}
-                      onChange={(e) => selectDate(e.target.value)}
-                      className="allow bg-transparent border-none text-white focus:outline-none font-mono text-xs cursor-pointer w-full"
-                    />
-                  </div>
-                </div>
 
-                {/* History List */}
-                <div className="flex-1 overflow-y-auto max-h-[400px] border border-white/5 rounded-2xl bg-slate-950/40">
-                  {getSavedHistory().length === 0 ? (
-                    <div className="p-12 text-center text-slate-500 flex flex-col items-center justify-center gap-3">
-                      <Calendar className="h-10 w-10 text-slate-600 animate-pulse" />
-                      <div>
-                        <p className="text-sm font-bold text-slate-400">No saved records found</p>
-                        <p className="text-xs text-slate-600 mt-1">Start tracking and click "Finalize Daily Report" on the dashboard to save permanently!</p>
+                  {/* SUPABASE CREDENTIALS CONFIGURATION */}
+                  {!getSupabaseKeys().isEnv && (
+                    <div className="bg-slate-950/40 p-4 rounded-2xl border border-white/5 flex flex-col gap-3">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                          <Key className="h-3.5 w-3.5 text-cyan-400" />
+                          Supabase Keys Config
+                        </h4>
+                        {isSupabaseConfigured && (
+                          <button 
+                            type="button" 
+                            onClick={handleClearCredentials}
+                            className="text-[10px] text-red-400 hover:underline cursor-pointer bg-transparent border-none p-0 focus:outline-none font-bold"
+                          >
+                            Clear Keys
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-500">Enter your project credentials below. Keys are stored locally in your browser cache.</p>
+                      <form onSubmit={handleSaveCredentials} className="flex flex-col gap-2 mt-1">
+                        <input
+                          type="text"
+                          placeholder="Supabase Project URL"
+                          value={supabaseUrlInput}
+                          onChange={(e) => setSupabaseUrlInput(e.target.value)}
+                          className="allow bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400 w-full"
+                          required
+                        />
+                        <input
+                          type="password"
+                          placeholder="Supabase Anon Key"
+                          value={supabaseAnonKeyInput}
+                          onChange={(e) => setSupabaseAnonKeyInput(e.target.value)}
+                          className="allow bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400 w-full"
+                          required
+                        />
+                        <button
+                          type="submit"
+                          className="allow bg-slate-800 hover:bg-slate-700 text-cyan-400 font-bold text-xs uppercase tracking-wider py-2 rounded-xl transition-all border border-white/10 cursor-pointer"
+                        >
+                          {isSupabaseConfigured ? "Update Credentials" : "Save Credentials"}
+                        </button>
+                      </form>
+                    </div>
+                  )}
+
+                  {getSupabaseKeys().isEnv && (
+                    <div className="bg-slate-950/40 p-4 rounded-2xl border border-white/5 flex items-center gap-3">
+                      <Database className="h-5 w-5 text-green-400 shrink-0" />
+                      <div className="text-left">
+                        <p className="text-xs font-bold text-white uppercase tracking-wider">Default Server Keys Active</p>
+                        <p className="text-[11px] text-slate-500">Loaded keys from environment variables. Custom inputs are disabled.</p>
                       </div>
                     </div>
-                  ) : (
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="border-b border-white/10 text-slate-400 uppercase tracking-wider text-[10px] font-bold">
-                          <th className="p-4">Study Date</th>
-                          <th className="p-4">Study Hours</th>
-                          <th className="p-4">MCQs Solved</th>
-                          <th className="p-4">Completion</th>
-                          <th className="p-4 text-right">Action</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-white/5 font-mono text-sm">
-                        {getSavedHistory().map((entry) => (
-                          <tr key={entry.date} className={`hover:bg-white/5 transition-colors ${entry.date === selectedDate ? 'bg-cyan-500/10' : ''}`}>
-                            <td className="p-4 font-bold text-white flex items-center gap-1.5">
-                              <span className={`h-2 w-2 rounded-full ${entry.date === selectedDate ? 'bg-cyan-400' : 'bg-slate-600'}`} />
-                              {entry.date}
-                            </td>
-                            <td className="p-4 text-slate-300">{entry.hours} hrs</td>
-                            <td className="p-4 text-slate-300">{entry.mcqTotal} MCQs</td>
-                            <td className="p-4 text-slate-300">
-                              <span className="text-[#00ffcc] font-bold">{entry.completedPercent}%</span>
-                            </td>
-                            <td className="p-4 text-right">
-                              <button
-                                onClick={() => loadDay(entry.date)}
-                                className="allow bg-slate-800 hover:bg-slate-700 hover:text-cyan-400 text-slate-300 text-xs px-3 py-1.5 rounded-lg border border-white/5 transition-all cursor-pointer font-sans font-semibold"
-                              >
-                                Load Day
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
                   )}
+
+                  {/* AUTH LOG IN / SIGN UP OR SESSION INFO */}
+                  {isSupabaseConfigured ? (
+                    !user ? (
+                      <div className="bg-slate-950/40 p-5 rounded-2xl border border-white/5 flex flex-col gap-4">
+                        <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5 border-b border-white/5 pb-2">
+                          <Lock className="h-3.5 w-3.5 text-cyan-400" />
+                          🔐 Account Access & Sync
+                        </h3>
+                        
+                        <form className="flex flex-col gap-3">
+                          <div className="flex flex-col gap-1 text-left">
+                            <label className="text-[10px] uppercase text-slate-400 font-bold tracking-wider">Email Address</label>
+                            <div className="relative">
+                              <Mail className="absolute left-3 top-2.5 h-3.5 w-3.5 text-slate-500" />
+                              <input
+                                type="email"
+                                placeholder="neetrix@aspirant.com"
+                                value={authEmail}
+                                onChange={(e) => setAuthEmail(e.target.value)}
+                                className="allow bg-slate-900 border border-white/10 rounded-xl pl-9 pr-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-400 w-full animate-none"
+                                required
+                              />
+                            </div>
+                          </div>
+
+                          <div className="flex flex-col gap-1 text-left">
+                            <label className="text-[10px] uppercase text-slate-400 font-bold tracking-wider">Password</label>
+                            <div className="relative">
+                              <Lock className="absolute left-3 top-2.5 h-3.5 w-3.5 text-slate-500" />
+                              <input
+                                type="password"
+                                placeholder="••••••••"
+                                value={authPassword}
+                                onChange={(e) => setAuthPassword(e.target.value)}
+                                className="allow bg-slate-900 border border-white/10 rounded-xl pl-9 pr-3 py-2 text-xs text-white focus:outline-none focus:border-cyan-400 w-full"
+                                required
+                              />
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2 mt-2">
+                            <button
+                              type="button"
+                              onClick={handleSupabaseLogin}
+                              disabled={authLoading}
+                              className="allow bg-cyan-500 hover:bg-cyan-400 text-black font-bold text-xs uppercase tracking-wider py-2.5 rounded-xl transition-all cursor-pointer border-none flex items-center justify-center gap-1.5 disabled:opacity-50"
+                            >
+                              {authLoading ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : "Log In"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleSupabaseSignup}
+                              disabled={authLoading}
+                              className="allow bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs uppercase tracking-wider py-2.5 rounded-xl transition-all border border-white/10 cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
+                            >
+                              Signup
+                            </button>
+                          </div>
+                        </form>
+                      </div>
+                    ) : (
+                      <div className="bg-slate-950/40 p-5 rounded-2xl border border-white/5 flex flex-col gap-4">
+                        <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5 border-b border-white/5 pb-2">
+                          <UserCheck className="h-3.5 w-3.5 text-cyan-400" />
+                          Authenticated Session Active
+                        </h3>
+
+                        <div className="text-xs text-slate-300 space-y-2.5 text-left bg-slate-900/40 p-3 rounded-xl border border-white/5">
+                          <div className="flex justify-between items-center">
+                            <span className="text-slate-500">Email:</span>
+                            <span className="font-mono text-white text-[11px] truncate max-w-[180px]">{user.email}</span>
+                          </div>
+                          <div className="flex justify-between items-center">
+                            <span className="text-slate-500">User ID:</span>
+                            <span className="font-mono text-[10px] text-slate-400 truncate max-w-[180px]">{user.id}</span>
+                          </div>
+                          <div className="flex justify-between items-center border-t border-white/5 pt-2">
+                            <span className="text-slate-500">Cloud Streak:</span>
+                            <span className="text-orange-400 font-bold flex items-center gap-1">
+                              <Flame className="h-3.5 w-3.5 shrink-0 animate-pulse" />
+                              {supabaseStreak} days
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col gap-2 mt-1">
+                          <button
+                            type="button"
+                            onClick={forceFullCloudSync}
+                            disabled={syncStatus === "syncing"}
+                            className="allow bg-[#00ffcc] text-black font-bold text-xs uppercase tracking-wider py-2.5 rounded-xl transition-all cursor-pointer border-none flex items-center justify-center gap-1.5"
+                          >
+                            {syncStatus === "syncing" ? (
+                              <>
+                                <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                                Syncing database...
+                              </>
+                            ) : (
+                              <>
+                                <RefreshCw className="h-3.5 w-3.5" />
+                                Full Backup to Cloud 🔄
+                              </>
+                            )}
+                          </button>
+                          
+                          <button
+                            type="button"
+                            onClick={handleSupabaseLogout}
+                            className="allow bg-red-950/20 text-red-400 hover:bg-red-900/20 border border-red-500/10 font-bold text-xs uppercase tracking-wider py-2 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                          >
+                            <LogOut className="h-3.5 w-3.5" />
+                            Log Out
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  ) : (
+                    <div className="bg-red-950/10 border border-red-500/10 p-5 rounded-2xl flex flex-col items-center justify-center text-center gap-3">
+                      <CloudOff className="h-10 w-10 text-red-500/55" />
+                      <div>
+                        <p className="text-xs font-bold text-slate-300">Sync Config Required</p>
+                        <p className="text-[11px] text-slate-500 mt-1 leading-normal">Configure Supabase connection keys above or in environment variables to enable auth, remote backup, & cloud database capabilities.</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* SUPABASE TABLE SCHEMA HINT */}
+                  <div className="bg-slate-950/20 p-4 rounded-2xl border border-white/5 flex flex-col gap-2 text-left">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                      <Database className="h-3.5 w-3.5 text-cyan-400" />
+                      Supabase Setup Guide
+                    </p>
+                    <p className="text-[11px] text-slate-500 leading-normal">
+                      Run this script in your Supabase <strong>SQL Editor</strong> to configure the database schema:
+                    </p>
+                    <pre className="bg-slate-900/80 p-3 rounded-xl text-[9px] font-mono text-slate-400 overflow-x-auto border border-white/5 whitespace-pre selection:bg-cyan-500/10 max-h-[140px] leading-relaxed">
+{`create table daily_logs (
+  id uuid default uuid_generate_v4() primary key,
+  user_id uuid references auth.users(id),
+  date text,
+  bio_mcq text,
+  phy_mcq text,
+  chem_mcq text,
+  errors text,
+  hours text,
+  locked boolean default false,
+  payload jsonb,
+  created_at timestamp default now(),
+  unique (user_id, date)
+);`}
+                    </pre>
+                  </div>
                 </div>
 
-                <div className="text-[10px] uppercase text-slate-600 tracking-wider text-center mt-2 flex items-center justify-center gap-1.5 font-bold">
-                  <Award className="h-3.5 w-3.5 text-cyan-500" />
-                  Your study records are saved locally and persist indefinitely across sessions.
+                {/* RIGHT COLUMN: HISTORICAL STUDY LOG (7 Cols) */}
+                <div className="lg:col-span-7 bg-slate-900/30 border border-white/5 rounded-3xl p-6 flex flex-col gap-6">
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-white/10 pb-4 gap-4">
+                    <div>
+                      <h2 className="text-xl font-bold text-cyan-400">📅 Historical Study Log</h2>
+                      <p className="text-xs text-slate-400 mt-1">Select and load any historical study record (data is saved to persistent local storage by date-key and is never deleted)</p>
+                    </div>
+                    <button
+                      onClick={openSettings}
+                      className="allow bg-cyan-500 hover:bg-cyan-400 text-black font-bold text-xs uppercase tracking-wider px-4 py-2.5 rounded-xl transition-all cursor-pointer border-none flex items-center gap-1.5"
+                    >
+                      <Settings className="h-3.5 w-3.5" />
+                      Settings
+                    </button>
+                  </div>
+
+                  {/* Search / Manual Input Idea */}
+                  <div className="bg-slate-950/60 p-4 rounded-2xl border border-white/5 flex flex-col sm:flex-row items-center justify-between gap-4">
+                    <div className="text-left">
+                      <p className="text-xs font-bold text-white uppercase tracking-wider">Fast Date Search</p>
+                      <p className="text-[11px] text-slate-500">Pick any date to automatically load or initialize its study targets</p>
+                    </div>
+                    <div className="flex items-center gap-2 bg-slate-900 px-3 py-2 rounded-xl border border-white/10 w-full sm:w-auto">
+                      <Calendar className="h-4 w-4 text-cyan-400 shrink-0" />
+                      <input 
+                        type="date"
+                        min="2026-01-01"
+                        max="2027-12-31"
+                        value={selectedDate}
+                        onChange={(e) => selectDate(e.target.value)}
+                        className="allow bg-transparent border-none text-white focus:outline-none font-mono text-xs cursor-pointer w-full"
+                      />
+                    </div>
+                  </div>
+
+                  {/* History List */}
+                  <div className="flex-1 overflow-y-auto max-h-[400px] border border-white/5 rounded-2xl bg-slate-950/40">
+                    {getSavedHistory().length === 0 ? (
+                      <div className="p-12 text-center text-slate-500 flex flex-col items-center justify-center gap-3">
+                        <Calendar className="h-10 w-10 text-slate-600 animate-pulse" />
+                        <div>
+                          <p className="text-sm font-bold text-slate-400">No saved records found</p>
+                          <p className="text-xs text-slate-600 mt-1">Start tracking and click "Finalize Daily Report" on the dashboard to save permanently!</p>
+                        </div>
+                      </div>
+                    ) : (
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="border-b border-white/10 text-slate-400 uppercase tracking-wider text-[10px] font-bold">
+                            <th className="p-4">Study Date</th>
+                            <th className="p-4">Study Hours</th>
+                            <th className="p-4">MCQs Solved</th>
+                            <th className="p-4">Completion</th>
+                            <th className="p-4 text-right">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/5 font-mono text-sm">
+                          {getSavedHistory().map((entry) => (
+                            <tr key={entry.date} className={`hover:bg-white/5 transition-colors ${entry.date === selectedDate ? 'bg-cyan-500/10' : ''}`}>
+                              <td className="p-4 font-bold text-white flex items-center gap-1.5">
+                                <span className={`h-2 w-2 rounded-full ${entry.date === selectedDate ? 'bg-cyan-400' : 'bg-slate-600'}`} />
+                                {entry.date}
+                              </td>
+                              <td className="p-4 text-slate-300">{entry.hours} hrs</td>
+                              <td className="p-4 text-slate-300">{entry.mcqTotal} MCQs</td>
+                              <td className="p-4 text-slate-300">
+                                <span className="text-[#00ffcc] font-bold">{entry.completedPercent}%</span>
+                              </td>
+                              <td className="p-4 text-right">
+                                <button
+                                  onClick={() => loadDay(entry.date)}
+                                  className="allow bg-slate-800 hover:bg-slate-700 hover:text-cyan-400 text-slate-300 text-xs px-3 py-1.5 rounded-lg border border-white/5 transition-all cursor-pointer font-sans font-semibold"
+                                >
+                                  Load Day
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+
+                  <div className="text-[10px] uppercase text-slate-600 tracking-wider text-center mt-2 flex items-center justify-center gap-1.5 font-bold">
+                    <Award className="h-3.5 w-3.5 text-cyan-500" />
+                    Your study records are saved locally and persist indefinitely across sessions.
+                  </div>
                 </div>
               </motion.div>
             )}
+
 
             {activeTab === 'report' && (
               <motion.div
