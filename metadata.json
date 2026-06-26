@@ -1,0 +1,6 @@
+{
+  "name": "Neetrix",
+  "description": "A premium, high-contrast dashboard for NEET aspirants to track their self-study hours, daily MCQs, discipline, class attendance, night revisions, and error logging.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
