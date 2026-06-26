@@ -184,7 +184,21 @@ export default function App() {
     return false;
   });
 
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
+
+  const showToast = (message: string, type: "success" | "error" | "info" = "success") => {
+    setToast({ message, type });
+  };
+
+  useEffect(() => {
+    if (toast) {
+      const timer = setTimeout(() => {
+        setToast(null);
+      }, 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [toast]);
+
   const [currentQuote, setCurrentQuote] = useState("");
   const [streak, setStreak] = useState<number>(() => {
     const saved = localStorage.getItem("streak");
@@ -220,7 +234,11 @@ export default function App() {
           setUser(currentUser);
           fetchAndUpdateSupabaseStreak(currentUser);
           syncDataFromSupabase(selectedDate, currentUser);
+        } else {
+          setUser(null);
         }
+      }).catch(err => {
+        console.error("Failed to fetch user session:", err);
       });
 
       const { data: { subscription } } = sb.auth.onAuthStateChange((event, session) => {
@@ -236,8 +254,10 @@ export default function App() {
       return () => {
         subscription.unsubscribe();
       };
+    } else {
+      setUser(null);
     }
-  }, [selectedDate]);
+  }, [selectedDate, isSupabaseConfigured]);
 
   const fetchAndUpdateSupabaseStreak = async (currentUser = user) => {
     const sb = getSupabase();
@@ -349,57 +369,67 @@ export default function App() {
     }
   };
 
-  const handleSupabaseLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSupabaseLogin = async (e?: React.FormEvent | string, pass?: string) => {
+    if (e && typeof e !== "string" && "preventDefault" in e) {
+      e.preventDefault();
+    }
     const sb = getSupabase();
     if (!sb) {
-      alert("Please configure your Supabase URL and Anon Key first!");
+      showToast("Please configure your Supabase URL and Anon Key first!", "error");
       return;
     }
-    if (!authEmail || !authPassword) {
-      alert("Please enter both email and password!");
+    
+    const emailVal = (typeof e === "string" ? e : null) || (document.getElementById("email") as HTMLInputElement)?.value || authEmail;
+    const passVal = pass || (document.getElementById("password") as HTMLInputElement)?.value || authPassword;
+
+    if (!emailVal || !passVal) {
+      showToast("Please enter both email and password!", "error");
       return;
     }
     setAuthLoading(true);
     try {
       const { data: authData, error } = await sb.auth.signInWithPassword({
-        email: authEmail,
-        password: authPassword,
+        email: emailVal,
+        password: passVal,
       });
       if (error) throw error;
-      setToastMessage("Login successful! Syncing cloud data... ✅");
-      setTimeout(() => setToastMessage(null), 3000);
+      showToast("Login successful 🔥", "success");
       setAuthPassword("");
     } catch (err: any) {
-      alert(`Login failed: ${err.message}`);
+      showToast(`Login failed: ${err.message}`, "error");
     } finally {
       setAuthLoading(false);
     }
   };
 
-  const handleSupabaseSignup = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSupabaseSignup = async (e?: React.FormEvent | string, pass?: string) => {
+    if (e && typeof e !== "string" && "preventDefault" in e) {
+      e.preventDefault();
+    }
     const sb = getSupabase();
     if (!sb) {
-      alert("Please configure your Supabase URL and Anon Key first!");
+      showToast("Please configure your Supabase URL and Anon Key first!", "error");
       return;
     }
-    if (!authEmail || !authPassword) {
-      alert("Please enter both email and password!");
+
+    const emailVal = (typeof e === "string" ? e : null) || (document.getElementById("email") as HTMLInputElement)?.value || authEmail;
+    const passVal = pass || (document.getElementById("password") as HTMLInputElement)?.value || authPassword;
+
+    if (!emailVal || !passVal) {
+      showToast("Please enter both email and password!", "error");
       return;
     }
     setAuthLoading(true);
     try {
       const { data: authData, error } = await sb.auth.signUp({
-        email: authEmail,
-        password: authPassword,
+        email: emailVal,
+        password: passVal,
       });
       if (error) throw error;
-      setToastMessage("Signup successful! Check email for verification 🔥");
-      setTimeout(() => setToastMessage(null), 3000);
+      showToast("Signup successful ✅ (check email)", "success");
       setAuthPassword("");
     } catch (err: any) {
-      alert(`Signup failed: ${err.message}`);
+      showToast(`Signup failed: ${err.message}`, "error");
     } finally {
       setAuthLoading(false);
     }
@@ -410,22 +440,43 @@ export default function App() {
     if (sb) {
       await sb.auth.signOut();
       setUser(null);
-      setToastMessage("Logged out successfully");
-      setTimeout(() => setToastMessage(null), 3000);
+      showToast("Logged out successfully", "success");
     }
   };
+
+  // Expose methods to window for global access/testing scripts
+  useEffect(() => {
+    (window as any).signup = handleSupabaseSignup;
+    (window as any).login = handleSupabaseLogin;
+    (window as any).getUser = async () => {
+      const sb = getSupabase();
+      if (!sb) return null;
+      const { data } = await sb.auth.getUser();
+      return data?.user || null;
+    };
+    (window as any).getTodayKey = getTodayKey;
+    (window as any).saveData = saveData;
+    (window as any).loadData = async () => {
+      const sb = getSupabase();
+      if (!sb) return;
+      const { data: { user: currentUser } } = await sb.auth.getUser();
+      if (currentUser) {
+        await syncDataFromSupabase(selectedDate, currentUser);
+      }
+    };
+    (window as any).lockUI = lockUI;
+  }, [authEmail, authPassword, selectedDate, streak, data, isLocked]);
 
   const handleSaveCredentials = (e: React.FormEvent) => {
     e.preventDefault();
     if (!supabaseUrlInput || !supabaseAnonKeyInput) {
-      alert("Please enter both Supabase URL and Anon Key!");
+      showToast("Please enter both Supabase URL and Anon Key!", "error");
       return;
     }
     const client = initSupabase(supabaseUrlInput.trim(), supabaseAnonKeyInput.trim());
     if (client) {
       setIsSupabaseConfigured(true);
-      setToastMessage("Supabase configuration saved! Connected successfully ⚡");
-      setTimeout(() => setToastMessage(null), 3000);
+      showToast("Supabase configuration saved! Connected successfully ⚡", "success");
       
       client.auth.getUser().then(({ data: { user: currentUser } }) => {
         if (currentUser) {
@@ -435,7 +486,7 @@ export default function App() {
         }
       });
     } else {
-      alert("Failed to initialize Supabase client. Check your keys!");
+      showToast("Failed to initialize Supabase client. Check your keys!", "error");
     }
   };
 
@@ -455,7 +506,7 @@ export default function App() {
     if (!sb || !user) return;
     
     setSyncStatus("syncing");
-    setToastMessage("Performing full cloud backup... 🔄");
+    showToast("Performing full cloud backup... 🔄", "info");
     
     try {
       const localKeys = Object.keys(localStorage).filter(k => k.startsWith("NEET_") && !k.startsWith("NEET_MONTH_"));
@@ -485,16 +536,13 @@ export default function App() {
       
       await fetchAndUpdateSupabaseStreak(user);
       setSyncStatus("success");
-      setToastMessage(`Synced ${successCount} entries to Supabase Cloud! ✅`);
+      showToast(`Synced ${successCount} entries to Supabase Cloud! ✅`, "success");
     } catch (err: any) {
       console.error(err);
       setSyncStatus("error");
-      setToastMessage(`Sync failed: ${err.message}`);
+      showToast(`Sync failed: ${err.message}`, "error");
     } finally {
-      setTimeout(() => {
-        setSyncStatus("idle");
-        setToastMessage(null);
-      }, 4000);
+      setSyncStatus("idle");
     }
   };
 
@@ -610,8 +658,7 @@ export default function App() {
     setStreak(nextStreak);
     localStorage.setItem("streak", nextStreak.toString());
     handleValueChange("streak", nextStreak);
-    setToastMessage(`Streak updated to ${nextStreak} Days! Save your progress to persist.`);
-    setTimeout(() => setToastMessage(null), 3000);
+    showToast(`Streak updated to ${nextStreak} Days! Save your progress to persist.`, "success");
   };
 
   // Load data from NEET_[dateStr] and set as active state
@@ -690,10 +737,9 @@ export default function App() {
     if (saved) {
       setSelectedDate(dateStr);
       loadDayData(dateStr);
-      setToastMessage(`Loaded report for ${dateStr}!`);
-      setTimeout(() => setToastMessage(null), 3000);
+      showToast(`Loaded report for ${dateStr}!`, "success");
     } else {
-      alert(`No data for this day (${dateStr})`);
+      showToast(`No data for this day (${dateStr})`, "info");
     }
   };
 
@@ -799,7 +845,7 @@ export default function App() {
     const sb = getSupabase();
     if (sb && user) {
       try {
-        setToastMessage("Syncing with Supabase Cloud... 🔄");
+        showToast("Syncing with Supabase Cloud... 🔄", "info");
         const { error } = await sb
           .from("daily_logs")
           .upsert({
@@ -817,19 +863,14 @@ export default function App() {
         if (error) throw error;
         
         await fetchAndUpdateSupabaseStreak(user);
-        setToastMessage("Saved & Synced with Supabase Cloud 🔒");
-        alert("Saved & Synced with Supabase Cloud 🔒");
+        showToast("Saved & Synced with Supabase Cloud 🔒", "success");
       } catch (err: any) {
         console.error("Supabase Sync Error:", err);
-        setToastMessage(`Saved locally, but Cloud Sync failed: ${err.message}`);
-        alert(`Saved locally, but Cloud Sync failed: ${err.message}`);
+        showToast(`Saved locally, but Cloud Sync failed: ${err.message}`, "error");
       }
     } else {
-      setToastMessage(`Submitted & Locked 🔒 (Saved locally)`);
-      alert("Submitted & Locked 🔒 (Saved locally)");
+      showToast("Submitted & Locked 🔒 (Saved locally)", "success");
     }
-
-    setTimeout(() => setToastMessage(null), 3000);
   };
 
   // Generate neat formatted NEET Daily Summary report
@@ -1188,7 +1229,7 @@ ${data.weakTopics ? data.weakTopics.trim() : "None listed."}
                   {/* GLOBAL ACTIONS / OPERATIONS */}
                   <div className="grid grid-cols-1 gap-3">
                     <button
-                      id="btn-save-progress"
+                      id="submitBtn"
                       onClick={saveData}
                       className="allow w-full bg-[#00ffcc] text-black py-3 rounded-xl font-black text-xs uppercase tracking-tighter hover:bg-[#00ffcc]/90 hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer shadow-lg shadow-cyan-500/5 flex items-center justify-center gap-1.5"
                     >
@@ -1328,12 +1369,13 @@ ${data.weakTopics ? data.weakTopics.trim() : "None listed."}
                           🔐 Account Access & Sync
                         </h3>
                         
-                        <form className="flex flex-col gap-3">
+                        <form onSubmit={(e) => e.preventDefault()} className="flex flex-col gap-3">
                           <div className="flex flex-col gap-1 text-left">
                             <label className="text-[10px] uppercase text-slate-400 font-bold tracking-wider">Email Address</label>
                             <div className="relative">
                               <Mail className="absolute left-3 top-2.5 h-3.5 w-3.5 text-slate-500" />
                               <input
+                                id="email"
                                 type="email"
                                 placeholder="neetrix@aspirant.com"
                                 value={authEmail}
@@ -1349,6 +1391,7 @@ ${data.weakTopics ? data.weakTopics.trim() : "None listed."}
                             <div className="relative">
                               <Lock className="absolute left-3 top-2.5 h-3.5 w-3.5 text-slate-500" />
                               <input
+                                id="password"
                                 type="password"
                                 placeholder="••••••••"
                                 value={authPassword}
@@ -1455,9 +1498,11 @@ ${data.weakTopics ? data.weakTopics.trim() : "None listed."}
                       Run this script in your Supabase <strong>SQL Editor</strong> to configure the database schema:
                     </p>
                     <pre className="bg-slate-900/80 p-3 rounded-xl text-[9px] font-mono text-slate-400 overflow-x-auto border border-white/5 whitespace-pre selection:bg-cyan-500/10 max-h-[140px] leading-relaxed">
-{`create table daily_logs (
-  id uuid default uuid_generate_v4() primary key,
-  user_id uuid references auth.users(id),
+{`create extension if not exists "uuid-ossp";
+
+create table if not exists daily_logs (
+  id uuid primary key default uuid_generate_v4(),
+  user_id uuid,
   date text,
   bio_mcq text,
   phy_mcq text,
@@ -1465,9 +1510,9 @@ ${data.weakTopics ? data.weakTopics.trim() : "None listed."}
   errors text,
   hours text,
   locked boolean default false,
-  payload jsonb,
   created_at timestamp default now(),
-  unique (user_id, date)
+
+  unique(user_id, date)
 );`}
                     </pre>
                   </div>
@@ -1726,20 +1771,40 @@ ${data.weakTopics ? data.weakTopics.trim() : "None listed."}
 
       {/* Persistent Toasts */}
       <AnimatePresence>
-        {toastMessage && (
+        {toast && (
           <motion.div
             id="toast-notification"
             initial={{ opacity: 0, y: 50, scale: 0.95 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 20, scale: 0.95 }}
-            className="fixed bottom-6 right-6 z-50 flex items-center gap-3 rounded-2xl border border-cyan-500/30 bg-[#05070A]/95 p-4 shadow-xl shadow-cyan-500/10 max-w-sm no-print"
+            className={`fixed bottom-6 right-6 z-50 flex items-center gap-3 rounded-2xl border p-4 shadow-xl max-w-sm no-print ${
+              toast.type === "error" 
+                ? "border-red-500/30 bg-[#0c0507]/95 shadow-red-500/10" 
+                : toast.type === "info"
+                ? "border-yellow-500/30 bg-[#0a0905]/95 shadow-yellow-500/10"
+                : "border-cyan-500/30 bg-[#05070A]/95 shadow-cyan-500/10"
+            }`}
           >
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-cyan-500/10 text-cyan-400">
-              <CheckCircle className="h-5 w-5" />
+            <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${
+              toast.type === "error"
+                ? "bg-red-500/10 text-red-400"
+                : toast.type === "info"
+                ? "bg-yellow-500/10 text-yellow-400"
+                : "bg-cyan-500/10 text-cyan-400"
+            }`}>
+              {toast.type === "error" ? (
+                <AlertTriangle className="h-5 w-5" />
+              ) : toast.type === "info" ? (
+                <AlertTriangle className="h-5 w-5" />
+              ) : (
+                <CheckCircle className="h-5 w-5" />
+              )}
             </div>
             <div>
-              <p className="text-sm font-semibold text-white">Telemetry Updated</p>
-              <p className="text-xs text-slate-400 mt-0.5">{toastMessage}</p>
+              <p className="text-sm font-semibold text-white">
+                {toast.type === "error" ? "System Error" : toast.type === "info" ? "Attention Required" : "Telemetry Updated"}
+              </p>
+              <p className="text-xs text-slate-400 mt-0.5">{toast.message}</p>
             </div>
           </motion.div>
         )}

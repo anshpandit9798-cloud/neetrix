@@ -27,16 +27,18 @@ export function initSupabase(url: string, anonKey: string) {
 }
 
 export function getSupabase(): SupabaseClient | null {
+  const { url, anonKey } = getSupabaseKeys();
+  if (!url || !anonKey) {
+    supabaseInstance = null;
+    return null;
+  }
   if (supabaseInstance) return supabaseInstance;
   
-  const { url, anonKey } = getSupabaseKeys();
-  if (url && anonKey) {
-    try {
-      supabaseInstance = createClient(url, anonKey);
-      return supabaseInstance;
-    } catch (e) {
-      console.error("Failed to initialize Supabase client", e);
-    }
+  try {
+    supabaseInstance = createClient(url, anonKey);
+    return supabaseInstance;
+  } catch (e) {
+    console.error("Failed to initialize Supabase client", e);
   }
   return null;
 }
