@@ -1,35 +1,24 @@
-import React, { useEffect, useRef, useState } from "react";
-import { Play, Pause, Square, Clock } from "lucide-react";
+import React from "react";
+import { Play, Pause, Square } from "lucide-react";
 import { motion } from "motion/react";
 
 interface StopwatchProps {
   studySeconds: number;
   setStudySeconds: (updater: number | ((prev: number) => number)) => void;
   totalHours: string;
+  isRunning: boolean;
+  setIsRunning: (running: boolean) => void;
+  disabled?: boolean;
 }
 
 export default function Stopwatch({
   studySeconds,
   setStudySeconds,
   totalHours,
+  isRunning,
+  setIsRunning,
+  disabled = false,
 }: StopwatchProps) {
-  const [isRunning, setIsRunning] = useState(false);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-
-  useEffect(() => {
-    if (isRunning) {
-      timerRef.current = setInterval(() => {
-        setStudySeconds((prev) => prev + 1);
-      }, 1000);
-    } else {
-      if (timerRef.current) clearInterval(timerRef.current);
-    }
-
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [isRunning, setStudySeconds]);
-
   const formatTime = (totalSecs: number) => {
     const h = Math.floor(totalSecs / 3600);
     const m = Math.floor((totalSecs % 3600) / 60);
@@ -37,11 +26,17 @@ export default function Stopwatch({
     return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
   };
 
-  const startTimer = () => setIsRunning(true);
-  const pauseTimer = () => setIsRunning(false);
+  const startTimer = () => {
+    if (!disabled) setIsRunning(true);
+  };
+  const pauseTimer = () => {
+    if (!disabled) setIsRunning(false);
+  };
   const stopTimer = () => {
-    setIsRunning(false);
-    setStudySeconds(0);
+    if (!disabled) {
+      setIsRunning(false);
+      setStudySeconds(0);
+    }
   };
 
   return (
@@ -68,7 +63,8 @@ export default function Stopwatch({
           <button
             id="btn-timer-start"
             onClick={startTimer}
-            className="flex-1 bg-cyan-500 text-black py-2.5 rounded-lg font-bold text-xs uppercase hover:bg-cyan-400 hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1"
+            disabled={disabled}
+            className="flex-1 bg-cyan-500 text-black py-2.5 rounded-lg font-bold text-xs uppercase hover:bg-cyan-400 hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 disabled:opacity-40 disabled:pointer-events-none"
           >
             <Play className="h-3 w-3 fill-current" />
             Resume
@@ -77,7 +73,8 @@ export default function Stopwatch({
           <button
             id="btn-timer-pause"
             onClick={pauseTimer}
-            className="flex-1 bg-amber-500 text-black py-2.5 rounded-lg font-bold text-xs uppercase hover:bg-amber-400 hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1"
+            disabled={disabled}
+            className="flex-1 bg-amber-500 text-black py-2.5 rounded-lg font-bold text-xs uppercase hover:bg-amber-400 hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 disabled:opacity-40 disabled:pointer-events-none"
           >
             <Pause className="h-3 w-3 fill-current" />
             Pause
@@ -87,7 +84,7 @@ export default function Stopwatch({
         <button
           id="btn-timer-stop"
           onClick={stopTimer}
-          disabled={studySeconds === 0}
+          disabled={disabled || studySeconds === 0}
           className="px-4 bg-slate-800 text-white py-2.5 rounded-lg font-bold text-xs uppercase border border-white/10 hover:bg-slate-700 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none transition-all cursor-pointer flex items-center justify-center gap-1"
         >
           <Square className="h-3 w-3 fill-current" />

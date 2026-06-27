@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { 
   Save, 
   FileDown, 
@@ -104,6 +104,7 @@ const getDefaultDataForDate = (dateStr: string, currentStreak: number = 14): Nee
 export default function App() {
   const [selectedDate, setSelectedDate] = useState<string>(getTodayKey());
   const [activeTab, setActiveTab] = useState<'dashboard' | 'history' | 'report'>('dashboard');
+  const [isRunning, setIsRunning] = useState<boolean>(false);
 
   // Initial state setup with load from localStorage
   const [data, setData] = useState<NeetData>(() => {
@@ -695,26 +696,67 @@ export default function App() {
     }
   }, [isLocked, activeTab, selectedDate, data]);
 
-  // Update studySeconds state helper
-  const handleSetStudySeconds = (updater: number | ((prevSecs: number) => number)) => {
+  // Update studySeconds state helper with useCallback and auto-save
+  const handleSetStudySeconds = useCallback((updater: number | ((prevSecs: number) => number)) => {
     setData((prev) => {
       const nextSeconds = typeof updater === "function" ? updater(prev.studySeconds) : updater;
       const nextHours = (nextSeconds / 3600).toFixed(1);
-      return {
+      const updated = {
         ...prev,
         studySeconds: nextSeconds,
         totalHours: nextHours,
       };
+
+      // Auto-save the stopwatch progress to localStorage so they don't lose hours on refresh/crash!
+      if (!prev.locked) {
+        const storageKey = `NEET_${selectedDate}`;
+        localStorage.setItem(storageKey, JSON.stringify(updated));
+        if (selectedDate === getTodayKey()) {
+          localStorage.setItem("neetData", JSON.stringify(updated));
+        }
+      }
+
+      return updated;
+    });
+  }, [selectedDate]);
+
+  // Generic key-value editor with auto-save for draft states
+  const handleValueChange = <K extends keyof NeetData>(key: K, value: NeetData[K]) => {
+    setData((prev) => {
+      const updated = {
+        ...prev,
+        [key]: value,
+      };
+
+      if (!prev.locked) {
+        const storageKey = `NEET_${selectedDate}`;
+        localStorage.setItem(storageKey, JSON.stringify(updated));
+        if (selectedDate === getTodayKey()) {
+          localStorage.setItem("neetData", JSON.stringify(updated));
+        }
+      }
+
+      return updated;
     });
   };
 
-  // Generic key-value editor
-  const handleValueChange = <K extends keyof NeetData>(key: K, value: NeetData[K]) => {
-    setData((prev) => ({
-      ...prev,
-      [key]: value,
-    }));
-  };
+  // Active study stopwatch runner (background task that survives tab changes!)
+  useEffect(() => {
+    let interval: NodeJS.Timeout | null = null;
+    if (isRunning) {
+      interval = setInterval(() => {
+        handleSetStudySeconds((prev) => prev + 1);
+      }, 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isRunning, handleSetStudySeconds]);
+
+  // Automatically pause the timer on date change
+  useEffect(() => {
+    setIsRunning(false);
+  }, [selectedDate]);
 
   // Clickable streak incrementor
   const handleIncrementStreak = () => {
@@ -1282,6 +1324,9 @@ ${data.weakTopics ? data.weakTopics.trim() : "None listed."}
                     studySeconds={data.studySeconds}
                     setStudySeconds={handleSetStudySeconds}
                     totalHours={data.totalHours}
+                    isRunning={isRunning}
+                    setIsRunning={setIsRunning}
+                    disabled={isLocked}
                   />
 
                   <DisciplineTracker data={data} onChange={handleValueChange} />
